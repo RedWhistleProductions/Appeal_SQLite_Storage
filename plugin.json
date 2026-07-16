@@ -1,0 +1,22 @@
+{
+    "schema_version":  1,
+    "name":  "Appeal_SQLite_Storage",
+    "version":  "1.0.0-beta.1",
+    "module":  "Storage",
+    "platforms":  [
+                      "windows-x64",
+                      "linux-x64"
+                  ],
+    "artifacts":  {
+                      "windows":  "Appeal_SQLite_Storage.dll",
+                      "linux":  "Appeal_SQLite_Storage.so"
+                  },
+    "runtime_dependencies":  {
+                                 "windows":  [
+
+                                             ],
+                                 "linux_debian":  [
+
+                                                  ]
+                             }
+}
