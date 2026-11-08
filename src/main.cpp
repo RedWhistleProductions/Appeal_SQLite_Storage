@@ -6,6 +6,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <stdexcept>
 
 namespace
 {
@@ -311,6 +312,49 @@ extern "C" void Use(std::string Name)
         Current_Database = Name;
         Print("Storage using database: " + Name);
     }
+}
+
+extern "C" void Execute_SQL(std::string SQL)
+{
+    sqlite3 *Database = Current();
+    if(!Database) throw std::runtime_error("Storage Execute_SQL requires an open database");
+    if(!Exec(Database, SQL))
+    {
+        std::string Error = sqlite3_errmsg(Database);
+        // A failed schema/seed batch must not leave partial setup changes.
+        if(!sqlite3_get_autocommit(Database)) Exec(Database, "ROLLBACK;");
+        throw std::runtime_error("Storage Execute_SQL failed: " + Error);
+    }
+}
+
+// A private editor workspace must not replace the caller's database connection.
+extern "C" void Open_Memory(std::string Name)
+{
+    auto Existing = Databases.find(Name);
+    if(Existing == Databases.end())
+    {
+        sqlite3 *Database = nullptr;
+        if(sqlite3_open(":memory:", &Database) != SQLITE_OK)
+        {
+            std::string Error = Database ? sqlite3_errmsg(Database) : "Cannot open memory database";
+            if(Database) sqlite3_close(Database);
+            throw std::runtime_error(Error);
+        }
+        Databases[Name] = Database;
+    }
+    Current_Database = Name;
+}
+
+// Expected validation/constraint errors belong in an editor status message.
+extern "C" std::string Try_SQL(std::string SQL)
+{
+    sqlite3 *Database = Current();
+    if(!Database) return "No database is open.";
+    char *Error = nullptr;
+    int Result = sqlite3_exec(Database, SQL.c_str(), nullptr, nullptr, &Error);
+    std::string Message = Result == SQLITE_OK ? "" : (Error ? Error : sqlite3_errmsg(Database));
+    sqlite3_free(Error);
+    return Message;
 }
 
 extern "C" void Set(std::string Key, std::string Value)
@@ -634,3 +678,68 @@ extern "C" void Load(std::string Name)
 {
     Restore((Storage_Path / (Name + ".backup.appealdb")).string());
 }
+
+namespace
+{
+    std::string Identifier(const std::string &Name)
+    {
+        if(Name.empty()) throw std::runtime_error("Empty Storage SQL identifier");
+        for(unsigned char C : Name)
+            if(!((C >= 'A' && C <= 'Z') || (C >= 'a' && C <= 'z') ||
+                 (C >= '0' && C <= '9') || C == '_'))
+                throw std::runtime_error("Invalid Storage SQL identifier: " + Name);
+        return "\"" + Name + "\"";
+    }
+
+    struct Field_Statement
+    {
+        sqlite3 *Database;
+        sqlite3_stmt *Statement = nullptr;
+        Field_Statement(const std::string &SQL) : Database(Current())
+        {
+            if(!Database) throw std::runtime_error("Storage field access requires an open database");
+            if(sqlite3_prepare_v2(Database, SQL.c_str(), -1, &Statement, nullptr) != SQLITE_OK)
+                throw std::runtime_error(sqlite3_errmsg(Database));
+        }
+        ~Field_Statement() { sqlite3_finalize(Statement); }
+        void Bind(int Index, const std::string &Text)
+        {
+            if(sqlite3_bind_text(Statement, Index, Text.c_str(), -1, SQLITE_TRANSIENT) != SQLITE_OK)
+                throw std::runtime_error(sqlite3_errmsg(Database));
+        }
+        int Step()
+        {
+            int Result = sqlite3_step(Statement);
+            if(Result != SQLITE_ROW && Result != SQLITE_DONE)
+            {
+                std::string Error = sqlite3_errmsg(Database);
+                if(!sqlite3_get_autocommit(Database)) Exec(Database, "ROLLBACK;");
+                throw std::runtime_error(Error);
+            }
+            return Result;
+        }
+    };
+}
+
+extern "C" std::string Get_Field(std::string Table, std::string Key_Column, std::string Key, std::string Field)
+{
+    Field_Statement Query("SELECT t." + Identifier(Field) + " FROM " + Identifier(Table) +
+                          " AS t WHERE t." + Identifier(Key_Column) + " = ?;");
+    Query.Bind(1, Key);
+    if(Query.Step() == SQLITE_DONE) return "";
+    const char *Value = reinterpret_cast<const char *>(sqlite3_column_text(Query.Statement, 0));
+    return Value ? Value : "";
+}
+
+extern "C" void Set_Field(std::string Table, std::string Key_Column, std::string Key,
+                           std::string Field, std::string Value)
+{
+    Field_Statement Query("INSERT INTO " + Identifier(Table) + " (" + Identifier(Key_Column) +
+                          ", " + Identifier(Field) + ") VALUES (?, ?) ON CONFLICT (" +
+                          Identifier(Key_Column) + ") DO UPDATE SET " + Identifier(Field) +
+                          " = excluded." + Identifier(Field) + ";");
+    Query.Bind(1, Key);
+    Query.Bind(2, Value);
+    Query.Step();
+}
+#include "Level_Storage.h"

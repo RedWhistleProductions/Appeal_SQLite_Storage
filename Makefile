@@ -31,7 +31,7 @@ check-dependencies:
 $(TARGET): $(OBJS)
 	$(CXX) $(LDFLAGS) -o $@ $^
 
-$(OBJ_DIR)/main.o: $(SRC_DIR)/main.cpp
+$(OBJ_DIR)/main.o: $(SRC_DIR)/main.cpp $(wildcard src/*.h)
 	@mkdir -p $(OBJ_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
